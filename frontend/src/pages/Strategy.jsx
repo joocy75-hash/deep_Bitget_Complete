@@ -4,14 +4,16 @@ import { RocketOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/i
 import StrategyList from '../components/strategy/StrategyList';
 import StrategyEditor from '../components/strategy/StrategyEditor';
 import SimpleStrategyCreator from '../components/strategy/SimpleStrategyCreator';
+import { useStrategies } from '../context/StrategyContext';
 
 const { Title } = Typography;
 
 export default function Strategy() {
+  // 전역 전략 상태 관리
+  const { refreshStrategies } = useStrategies();
+
   // 모바일 감지
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  // 목록 새로고침 키 (전략 생성 후 목록 강제 새로고침용)
-  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -33,8 +35,8 @@ export default function Strategy() {
   };
 
   const handleSaveStrategy = (values) => {
-    // 전략 저장 후 목록으로 돌아가기
-    setRefreshKey(prev => prev + 1); // 목록 새로고침 트리거
+    // 전략 저장 후 전역 상태 새로고침 후 목록으로 돌아가기
+    refreshStrategies();
     setActiveTab('list');
     setEditingStrategy(null);
   };
@@ -46,8 +48,8 @@ export default function Strategy() {
 
   // 간단 전략 생성 완료 시
   const handleSimpleStrategyCreated = (strategy) => {
-    console.log('[Strategy] Strategy created, refreshing list...', strategy);
-    setRefreshKey(prev => prev + 1); // 목록 새로고침 트리거
+    console.log('[Strategy] Strategy created, refreshing global list...', strategy);
+    refreshStrategies(); // 전역 상태 새로고침
     setActiveTab('list');
   };
 
@@ -98,7 +100,6 @@ export default function Strategy() {
                 ),
                 children: (
                   <StrategyList
-                    key={refreshKey} // refreshKey가 변경되면 컴포넌트 리마운트 -> loadStrategies() 자동 호출
                     onEdit={handleEditStrategy}
                     onNew={handleNewStrategy}
                   />

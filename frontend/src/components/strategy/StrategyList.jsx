@@ -9,102 +9,49 @@ import {
     PauseCircleOutlined,
     ReloadOutlined,
 } from '@ant-design/icons';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+import { useStrategies } from '../../context/StrategyContext';
 
 export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
-    const [strategies, setStrategies] = useState([]);
-    const [loading, setLoading] = useState(false);
+    const {
+        strategies: globalStrategies,
+        loading: globalLoading,
+        loadStrategies,
+        deleteStrategy,
+        toggleStrategy,
+        refreshStrategies
+    } = useStrategies();
 
+    // 테이블용 포맷된 전략 데이터
+    const [formattedStrategies, setFormattedStrategies] = useState([]);
+
+    // 전역 상태가 변경되면 포맷된 데이터 업데이트
     useEffect(() => {
-        loadStrategies();
-    }, []);
+        const formatted = globalStrategies.map(s => ({
+            id: s.id,
+            name: s.name,
+            description: s.description,
+            type: s.type || 'TREND_FOLLOWING',
+            status: s.is_active ? 'ACTIVE' : 'INACTIVE',
+            symbols: [s.symbol],
+            timeframe: s.timeframe,
+            winRate: s.parameters?.win_rate || 0,
+            totalTrades: s.parameters?.total_trades || 0,
+            profit: s.parameters?.profit || 0,
+            parameters: s.parameters,
+        }));
 
-    const loadStrategies = async () => {
-        setLoading(true);
-        try {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                message.error('로그인이 필요합니다');
-                setLoading(false);
-                return;
-            }
+        setFormattedStrategies(formatted);
 
-            // AI 생성 전략 조회
-            const response = await fetch(`${API_BASE_URL}/ai/strategies/list`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to fetch strategies');
-            }
-
-            const data = await response.json();
-
-            // 전략 데이터를 테이블 형식으로 변환
-            const formattedStrategies = data.strategies.map(s => ({
-                id: s.id,
-                name: s.name,
-                description: s.description,
-                type: s.type || 'TREND_FOLLOWING',
-                status: s.is_active ? 'ACTIVE' : 'INACTIVE',
-                symbols: [s.symbol],
-                timeframe: s.timeframe,
-                winRate: s.parameters?.win_rate || 0,
-                totalTrades: s.parameters?.total_trades || 0,
-                profit: s.parameters?.profit || 0,
-                parameters: s.parameters,
-            }));
-
-            setStrategies(formattedStrategies);
-
-            // 부모 컴포넌트에 전략 목록 전달
-            if (onStrategiesLoaded) {
-                onStrategiesLoaded(formattedStrategies);
-            }
-
-            setLoading(false);
-        } catch (error) {
-            console.error('[StrategyList] Error loading strategies:', error);
-            message.error('전략 목록을 불러오는데 실패했습니다');
-            setLoading(false);
+        // 부모 컴포넌트에 전략 목록 전달
+        if (onStrategiesLoaded) {
+            onStrategiesLoaded(formatted);
         }
-    };
-
-    const generateMockStrategies = () => {
-        // 가상 데이터를 빈 배열로 반환 (실제 백엔드 연동 전까지)
-        return [];
-    };
+    }, [globalStrategies, onStrategiesLoaded]);
 
     const handleToggleStatus = async (strategy) => {
         try {
-            const token = localStorage.getItem('token');
-
-            // 백엔드 API 호출하여 실제로 상태 변경
-            const response = await fetch(`${API_BASE_URL}/strategy/${strategy.id}/toggle`, {
-                method: 'PATCH',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to toggle strategy status');
-            }
-
-            const data = await response.json();
-            const newStatus = data.is_active ? 'ACTIVE' : 'INACTIVE';
-
-            // 백엔드 응답에 따라 프론트엔드 상태 업데이트
-            setStrategies(strategies.map(s =>
-                s.id === strategy.id ? { ...s, status: newStatus } : s
-            ));
-
-            message.success(`전략이 ${newStatus === 'ACTIVE' ? '활성화' : '비활성화'}되었습니다`);
+            const newActiveStatus = await toggleStrategy(strategy.id);
+            message.success(`전략이 ${newActiveStatus ? '활성화' : '비활성화'}되었습니다`);
         } catch (error) {
             console.error('[StrategyList] Error toggling status:', error);
             message.error('전략 상태 변경에 실패했습니다');
@@ -113,21 +60,7 @@ export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
 
     const handleDelete = async (strategyId) => {
         try {
-            const token = localStorage.getItem('token');
-
-            const response = await fetch(`${API_BASE_URL}/ai/strategies/${strategyId}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to delete strategy');
-            }
-
-            setStrategies(strategies.filter(s => s.id !== strategyId));
+            await deleteStrategy(strategyId);
             message.success('전략이 삭제되었습니다');
         } catch (error) {
             console.error('[StrategyList] Error deleting strategy:', error);
@@ -268,8 +201,8 @@ export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
                 <Space>
                     <Button
                         icon={<ReloadOutlined />}
-                        onClick={loadStrategies}
-                        loading={loading}
+                        onClick={refreshStrategies}
+                        loading={globalLoading}
                         size="small"
                     >
                         새로고침
@@ -286,9 +219,9 @@ export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
         >
             <Table
                 columns={columns}
-                dataSource={strategies}
+                dataSource={formattedStrategies}
                 rowKey="id"
-                loading={loading}
+                loading={globalLoading}
                 pagination={{
                     pageSize: 10,
                     showSizeChanger: true,

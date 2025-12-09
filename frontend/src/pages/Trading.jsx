@@ -11,9 +11,9 @@ import {
 } from '@ant-design/icons';
 import { chartAPI } from '../api/chart';
 import { botAPI } from '../api/bot';
-import { strategyAPI } from '../api/strategy';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
+import { useStrategies } from '../context/StrategyContext';
 import TradingChart from '../components/TradingChart';
 import BalanceCard from '../components/BalanceCard';
 import PositionList from '../components/PositionList';
@@ -24,6 +24,7 @@ const { Option } = Select;
 export default function Trading() {
     const { user } = useAuth();
     const { isConnected, subscribe } = useWebSocket();
+    const { getActiveStrategies, loading: strategiesLoading, lastUpdated } = useStrategies();
 
     // 화면 크기 감지
     const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
@@ -45,7 +46,6 @@ export default function Trading() {
 
     // Bot State
     const [botStatus, setBotStatus] = useState(null);
-    const [strategies, setStrategies] = useState([]);
     const [selectedStrategy, setSelectedStrategy] = useState('');
     const [botLoading, setBotLoading] = useState(false);
     const [showStartConfirm, setShowStartConfirm] = useState(false);
@@ -84,21 +84,12 @@ export default function Trading() {
         }
     }, [symbol, timeframe]);
 
-    // Load Bot Data
+    // Load Bot Data (전략 목록은 StrategyContext에서 전역 관리)
     const loadBotData = async () => {
         setBotLoading(true);
         try {
-            const [statusData, strategiesData] = await Promise.all([
-                botAPI.getBotStatus(),
-                strategyAPI.getAIStrategies()  // 활성화된 공용 전략 + 사용자 전략 모두 포함
-            ]);
-
+            const statusData = await botAPI.getBotStatus();
             setBotStatus(statusData);
-
-            // 전략 목록 설정 (활성화된 전략만 표시됨)
-            const strategyList = strategiesData.strategies || [];
-            setStrategies(strategyList);
-            console.log(`[Trading] Loaded ${strategyList.length} strategies`);
 
             if (statusData.strategy_id) {
                 setSelectedStrategy(statusData.strategy_id.toString());
@@ -110,11 +101,26 @@ export default function Trading() {
         }
     };
 
+    // 전역 전략 상태에서 활성화된 전략만 가져오기
+    const strategies = getActiveStrategies();
+
     // Initial Load
     useEffect(() => {
         loadChartData();
         loadBotData();
     }, []);
+
+    // 전역 전략 상태가 변경되면 선택된 전략 유효성 검사
+    useEffect(() => {
+        if (selectedStrategy && strategies.length > 0) {
+            const strategyExists = strategies.some(s => s.id === parseInt(selectedStrategy));
+            if (!strategyExists) {
+                console.log(`[Trading] Selected strategy ${selectedStrategy} no longer available, clearing selection`);
+                setSelectedStrategy('');
+            }
+        }
+        console.log(`[Trading] Strategy list updated: ${strategies.length} active strategies available`);
+    }, [lastUpdated, strategies, selectedStrategy]);
 
     // Reload on symbol/timeframe change
     useEffect(() => {
