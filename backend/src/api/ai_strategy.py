@@ -117,15 +117,31 @@ async def list_ai_strategies(
     session: AsyncSession = Depends(get_session),
     user_id: int = Depends(get_current_user_id),
 ):
-    """사용자의 모든 전략 조회 (활성화/비활성화 모두)"""
-    from sqlalchemy import select
+    """
+    전략 목록 조회
+
+    반환하는 전략:
+    1. 공용 전략 (user_id=NULL, is_active=True) - 모든 사용자가 볼 수 있는 활성화된 공용 전략
+    2. 현재 사용자가 생성한 전략 - 활성화 여부 무관
+    """
+    from sqlalchemy import select, or_
 
     result = await session.execute(
         select(Strategy)
-        .where(Strategy.user_id == user_id)
+        .where(
+            or_(
+                # 공용 전략: user_id=NULL이고 활성화된 것만
+                (Strategy.user_id.is_(None)) & (Strategy.is_active == True),
+                # 사용자 본인의 전략: 활성화 여부 무관
+                Strategy.user_id == user_id,
+            )
+        )
         .order_by(Strategy.id.desc())  # 최신순 정렬
     )
     strategies = result.scalars().all()
+    logger.info(
+        f"[Strategy List] User {user_id}: Found {len(strategies)} strategies (including public)"
+    )
 
     return {
         "strategies": [
