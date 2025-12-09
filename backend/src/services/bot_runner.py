@@ -937,27 +937,13 @@ class BotRunner:
                         await asyncio.sleep(1.0)  # 에러 발생 시 잠시 대기
 
         except asyncio.CancelledError:
-            logger.info(f"Bot cancelled for user {user_id}")
+            # 사용자가 의도적으로 봇을 중지한 경우에만 DB 상태를 False로 업데이트
+            logger.info(f"Bot cancelled by user for user {user_id}")
             await broadcast_to_user(
                 user_id, {"event": "bot_status", "status": "stopped"}
             )
-            raise  # CancelledError는 재발생시켜야 함
 
-        except Exception as exc:
-            logger.error(
-                f"Fatal error in bot loop for user {user_id}: {exc}", exc_info=True
-            )
-            await broadcast_to_user(
-                user_id, {"event": "bot_status", "status": "error", "message": str(exc)}
-            )
-
-        finally:
-            # 리소스 정리 및 데이터베이스 상태 업데이트
-            logger.info(f"Bot stopped for user {user_id}. Cleaning up resources...")
-            if user_id in self.tasks:
-                del self.tasks[user_id]
-
-            # 데이터베이스의 BotStatus 업데이트
+            # CancelledError일 때만 DB를 False로 업데이트 (사용자 의도적 중지)
             try:
                 async with session_factory() as cleanup_session:
                     result = await cleanup_session.execute(
@@ -967,9 +953,35 @@ class BotRunner:
                     if bot_status and bot_status.is_running:
                         bot_status.is_running = False
                         await cleanup_session.commit()
-                        logger.info(f"Updated BotStatus to stopped for user {user_id}")
+                        logger.info(
+                            f"Updated BotStatus to stopped for user {user_id} (user initiated)"
+                        )
             except Exception as e:
                 logger.error(f"Failed to update BotStatus for user {user_id}: {e}")
+
+            raise  # CancelledError는 재발생시켜야 함
+
+        except Exception as exc:
+            # 에러로 인한 종료 - DB는 is_running=True 유지 (자동 재시작 가능하도록)
+            logger.error(
+                f"Fatal error in bot loop for user {user_id}: {exc}. "
+                f"DB status will remain is_running=True for auto-restart on next status check.",
+                exc_info=True,
+            )
+            await broadcast_to_user(
+                user_id, {"event": "bot_status", "status": "error", "message": str(exc)}
+            )
+
+        finally:
+            # 리소스 정리 (메모리의 tasks 딕셔너리만 정리, DB는 건드리지 않음)
+            logger.info(
+                f"Bot loop ended for user {user_id}. Cleaning up memory resources..."
+            )
+            if user_id in self.tasks:
+                del self.tasks[user_id]
+            # 주의: DB 상태는 여기서 업데이트하지 않음!
+            # - 사용자가 stop_bot 호출 시: CancelledError 핸들러에서 DB 업데이트
+            # - 에러로 종료 시: DB는 is_running=True 유지하여 새로고침 시 자동 재시작
 
     async def _get_user_strategy(self, session: AsyncSession, user_id: int) -> Strategy:
         """사용자의 bot_status에서 선택된 전략 가져오기"""

@@ -414,13 +414,33 @@ async def bot_status(
         manager: BotManager = request.app.state.bot_manager
         is_actually_running = manager.runner.is_running(user_id)
 
-        # 데이터베이스와 실제 상태가 다르면 동기화
+        # 데이터베이스와 실제 상태가 다른 경우 처리
         if status and status.is_running != is_actually_running:
-            logger.warning(
-                f"Bot status mismatch for user {user_id}: DB={status.is_running}, Actual={is_actually_running}"
-            )
-            status.is_running = is_actually_running
-            await session.commit()
+            if status.is_running and not is_actually_running:
+                # DB에는 실행 중으로 표시되어 있지만 메모리에서 실행 되지 않음
+                # → 봇을 자동으로 재시작 시도 (새로고침 시 상태 유지)
+                logger.warning(
+                    f"Bot status mismatch for user {user_id}: DB=True, Actual=False. "
+                    f"Attempting to restart bot..."
+                )
+                try:
+                    await manager.start_bot(user_id)
+                    is_actually_running = True
+                    logger.info(f"Bot auto-restarted for user {user_id}")
+                except Exception as e:
+                    # 재시작 실패 시에만 DB 상태를 False로 업데이트
+                    logger.error(f"Failed to auto-restart bot for user {user_id}: {e}")
+                    status.is_running = False
+                    await session.commit()
+                    is_actually_running = False
+            else:
+                # DB=False, Actual=True인 경우 (드문 경우) → DB를 True로 업데이트
+                logger.warning(
+                    f"Bot status mismatch for user {user_id}: DB=False, Actual=True. "
+                    f"Updating DB to match."
+                )
+                status.is_running = True
+                await session.commit()
 
         is_running = is_actually_running
         strategy_id = status.strategy_id if status else None
