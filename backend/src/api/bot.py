@@ -86,18 +86,81 @@ async def start_bot(
 
     # 텔레그램 알림 전송
     try:
+        from ..database.models import Strategy
+        from sqlalchemy import select as sql_select
+        import json
+
+        # 전략 정보 조회
+        strategy_result = await session.execute(
+            sql_select(Strategy).where(Strategy.id == payload.strategy_id)
+        )
+        strategy = strategy_result.scalars().first()
+
+        # 전략 파라미터 파싱
+        strategy_params = {}
+        strategy_description = "전략 설명 없음"
+        if strategy:
+            strategy_description = strategy.description or strategy.name
+            if strategy.params:
+                try:
+                    strategy_params = json.loads(strategy.params)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
         notifier = get_telegram_notifier()
         if notifier.is_enabled():
             config = BotConfig(
                 exchange="BITGET",
-                trade_amount=35.0,  # TODO: 실제 설정 값 가져오기
-                stop_loss_percent=5.0,
-                timeframe="5m",
-                strategy=f"Strategy #{payload.strategy_id}",
-                leverage=10,
+                trade_amount=strategy_params.get('position_size_percent', 35.0),
+                stop_loss_percent=strategy_params.get('stop_loss', 5.0),
+                timeframe=strategy_params.get('timeframe', '1h'),
+                strategy=f"{strategy.name if strategy else f'Strategy #{payload.strategy_id}'}",
+                leverage=strategy_params.get('leverage', 10),
                 margin_mode="isolated",
             )
-            await notifier.notify_bot_start(config)
+
+            # 상세 메시지 생성 (마크다운 제거 - 텔레그램 API 에러 방지)
+            detail_message = "\n\n📊 전략 상세정보\n"
+            detail_message += "━━━━━━━━━━━━━━━━\n"
+            detail_message += f"{strategy_description[:200]}...\n\n" if len(strategy_description) > 200 else f"{strategy_description}\n\n"
+
+            if strategy_params:
+                detail_message += "⚙️ 설정값\n"
+                detail_message += f"• 심볼: {strategy_params.get('symbol', 'BTCUSDT')}\n"
+                detail_message += f"• 타임프레임: {strategy_params.get('timeframe', '1h')}\n"
+                detail_message += f"• 레버리지: {strategy_params.get('leverage', 10)}x\n"
+                detail_message += f"• 포지션 크기: {strategy_params.get('position_size_percent', 35)}%\n"
+                detail_message += f"• 손절: -{strategy_params.get('stop_loss', 2.0)}%\n"
+                detail_message += f"• 익절: +{strategy_params.get('take_profit', 4.0)}%\n"
+
+                # RSI 설정 (있는 경우)
+                if 'rsi_period' in strategy_params:
+                    detail_message += "\n📈 RSI 설정\n"
+                    detail_message += f"• RSI 기간: {strategy_params.get('rsi_period', 14)}\n"
+                    detail_message += f"• 과매도: {strategy_params.get('rsi_oversold', 30)} 이하\n"
+                    detail_message += f"• 과매수: {strategy_params.get('rsi_overbought', 70)} 이상\n"
+
+                # MACD 설정 (있는 경우)
+                if 'macd_fast' in strategy_params:
+                    detail_message += "\n📉 MACD 설정\n"
+                    detail_message += f"• Fast: {strategy_params.get('macd_fast', 12)}\n"
+                    detail_message += f"• Slow: {strategy_params.get('macd_slow', 26)}\n"
+                    detail_message += f"• Signal: {strategy_params.get('macd_signal', 9)}\n"
+
+                # EMA 설정 (있는 경우)
+                if 'ema_fast' in strategy_params:
+                    detail_message += "\n🎯 EMA 설정\n"
+                    detail_message += f"• 단기: {strategy_params.get('ema_fast', 9)}\n"
+                    detail_message += f"• 중기: {strategy_params.get('ema_medium', 21)}\n"
+                    detail_message += f"• 장기: {strategy_params.get('ema_slow', 50)}\n"
+
+                # 볼린저밴드 설정 (있는 경우)
+                if 'bb_period' in strategy_params:
+                    detail_message += "\n📊 볼린저밴드 설정\n"
+                    detail_message += f"• 기간: {strategy_params.get('bb_period', 20)}\n"
+                    detail_message += f"• 표준편차: {strategy_params.get('bb_std_dev', 2.0)}\n"
+
+            await notifier.notify_bot_start(config, additional_message=detail_message)
             logger.info(f"📱 Telegram: Bot start notification sent for user {user_id}")
     except Exception as e:
         logger.warning(f"텔레그램 알림 전송 실패: {e}")

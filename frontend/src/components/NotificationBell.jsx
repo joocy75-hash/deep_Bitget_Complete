@@ -24,6 +24,13 @@ export default function NotificationBell() {
         loadNotifications();
     }, []);
 
+    // 드롭다운이 열릴 때마다 통계 새로고침
+    useEffect(() => {
+        if (visible) {
+            loadNotifications();
+        }
+    }, [visible]);
+
     // WebSocket으로 실시간 알림 수신
     useEffect(() => {
         if (lastMessage && typeof lastMessage === 'object') {

@@ -1,8 +1,6 @@
 from collections import deque
 import json
-from typing import Any, Deque, List
-
-from .risk_engine import calculate_position_size
+from typing import Deque, List
 
 BUFFER_SIZE = 200
 _candle_buffers: dict[str, Deque[dict]] = {}
@@ -75,13 +73,38 @@ def ai_signal(price: float, candles: list, params: dict | None = None) -> str:
     return "buy" if price % 2 == 0 else "sell"
 
 
-def run(strategy_code: str, price: float, candles: list, params_json: str | None = None, symbol: str = "") -> str:
+def run(
+    strategy_code: str,
+    price: float,
+    candles: list,
+    params_json: str | None = None,
+    symbol: str = "",
+) -> str:
     buffer = _ensure_buffer(symbol or "global")
     buffer.extend(candles[-BUFFER_SIZE:])
 
     params = json.loads(params_json) if params_json else {}
-    strategy_type = params.get("type", "trend")
 
+    # strategy_code 또는 params의 type으로 전략 결정
+    # strategy_code가 있으면 우선 사용, 없으면 params의 type 사용
+    strategy_type = params.get("type", "")
+
+    # strategy_code 기반 매핑 (우선순위 높음)
+    code_to_type_map = {
+        "rsi_strategy": "rsi",
+        "ema": "ema",
+        "ma_cross": "ema",
+        "breakout": "breakout",
+        "golden_cross": "ema",
+        "trend_following": "ema",
+    }
+
+    if strategy_code in code_to_type_map:
+        strategy_type = code_to_type_map[strategy_code]
+    elif not strategy_type:
+        strategy_type = "ema"  # 기본값
+
+    # 전략 실행
     if strategy_type == "rsi":
         signal = rsi_reversal(price, list(buffer), params)
     elif strategy_type == "ema":
@@ -91,7 +114,8 @@ def run(strategy_code: str, price: float, candles: list, params_json: str | None
     elif strategy_type == "ai":
         signal = ai_signal(price, list(buffer), params)
     else:
-        signal = "hold"
+        # 기본 전략: EMA 크로스 기반
+        signal = ema_cross(price, list(buffer), params)
 
     # smoothing via simple filter
     fast = params.get("ema_fast", 3)

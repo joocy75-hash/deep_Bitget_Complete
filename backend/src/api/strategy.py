@@ -40,12 +40,30 @@ async def create_strategy(
                 f"[Strategy Create] Converted parameters to params: {params_str}"
             )
 
+        # 전략 코드 결정 (code가 없으면 type 기반으로 자동 매핑)
+        strategy_code = payload.code
+        if not strategy_code and payload.type:
+            # type을 code로 매핑 (프론트엔드 호환성)
+            type_to_code_map = {
+                "golden_cross": "ma_cross",  # 골든크로스 → MA 크로스 전략
+                "rsi_reversal": "rsi_strategy",  # RSI 반전 → RSI 전략
+                "trend_following": "ema",  # 추세추종 → EMA 전략
+                "breakout": "breakout",  # 돌파 → 돌파 전략
+                "aggressive": "ultra_aggressive",  # 공격적 → 울트라 공격적 전략
+                "ultra_aggressive": "ultra_aggressive",
+                "ma_cross": "ma_cross",
+            }
+            strategy_code = type_to_code_map.get(payload.type, payload.type)
+            logger.info(
+                f"[Strategy Create] Auto-mapped type '{payload.type}' to code '{strategy_code}'"
+            )
+
         # 현재 로그인한 사용자의 전략으로 저장
         strategy = Strategy(
             user_id=user_id,  # 현재 사용자 ID 저장
             name=payload.name,
             description=payload.description or "",
-            code=payload.code or None,  # code가 없으면 None (nullable)
+            code=strategy_code,  # 매핑된 전략 코드 저장
             params=params_str,
             is_active=False,  # 기본적으로 비활성화
         )
@@ -107,14 +125,28 @@ async def list_strategies(
     session: AsyncSession = Depends(get_session),
     user_id: int = Depends(get_current_user_id),
 ):
-    """전략 목록 조회 (JWT 인증 필요, 관리자가 만든 공용 전략만)"""
-    # user_id가 NULL이고 is_active = True인 전략만 반환
+    """전략 목록 조회 (JWT 인증 필요)
+
+    반환하는 전략:
+    1. 공용 전략 (user_id=NULL, is_active=True)
+    2. 현재 사용자가 생성한 전략 (user_id=현재사용자)
+    """
+    from sqlalchemy import or_
+
+    # 공용 전략 (is_active=True) + 현재 사용자의 전략 모두 반환
     result = await session.execute(
-        select(Strategy)
-        .where(Strategy.user_id.is_(None))
-        .where(Strategy.is_active.is_(True))
+        select(Strategy).where(
+            or_(
+                # 공용 전략 (관리자가 만든 활성화된 전략)
+                (Strategy.user_id.is_(None)) & (Strategy.is_active.is_(True)),
+                # 현재 사용자가 직접 만든 전략 (활성화 여부 무관)
+                Strategy.user_id == user_id,
+            )
+        )
     )
-    return result.scalars().all()
+    strategies = result.scalars().all()
+    logger.info(f"[Strategy List] User {user_id}: Found {len(strategies)} strategies")
+    return strategies
 
 
 @router.post("/select")
@@ -148,11 +180,23 @@ async def get_strategy(
     session: AsyncSession = Depends(get_session),
     user_id: int = Depends(get_current_user_id),
 ):
-    """전략 상세 조회 (JWT 인증 필요, 공용 전략 조회)"""
+    """전략 상세 조회 (JWT 인증 필요)
+
+    조회 가능한 전략:
+    1. 공용 전략 (user_id=NULL)
+    2. 현재 사용자가 생성한 전략
+    """
+    from sqlalchemy import or_
+
     result = await session.execute(
         select(Strategy)
         .where(Strategy.id == strategy_id)
-        .where(Strategy.user_id.is_(None))  # 공용 전략만 조회
+        .where(
+            or_(
+                Strategy.user_id.is_(None),  # 공용 전략
+                Strategy.user_id == user_id,  # 본인 전략
+            )
+        )
     )
     strategy = result.scalars().first()
 

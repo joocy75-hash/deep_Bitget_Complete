@@ -57,4 +57,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Run application
 # Run migrations and start application
-CMD alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
+CMD alembic upgrade heads && uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4

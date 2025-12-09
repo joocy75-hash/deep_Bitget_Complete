@@ -276,12 +276,50 @@ class BitgetRestClient:
         Returns:
             계좌 정보 딕셔너리
         """
-        endpoint = "/api/v2/mix/account/account"
+        endpoint = "/api/v2/mix/account/accounts"
         params = {"productType": product_type}
 
         result = await self._request("GET", endpoint, params=params)
         logger.info(f"Account info retrieved: {result}")
         return result
+
+    async def fetch_balance(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        잔고 조회 (CCXT 호환 형식)
+
+        Args:
+            params: 추가 파라미터 (type: 'swap' 등)
+
+        Returns:
+            CCXT 스타일의 잔고 딕셔너리
+        """
+        account_type = params.get("type", "swap") if params else "swap"
+        product_type = "USDT-FUTURES" if account_type == "swap" else "COIN-FUTURES"
+
+        account_info = await self.get_account_info(product_type=product_type)
+
+        # CCXT 형식으로 변환
+        balance_dict = {}
+        # API 응답이 직접 배열이거나 data 키 안에 배열일 수 있음
+        accounts = (
+            account_info
+            if isinstance(account_info, list)
+            else account_info.get("data", [])
+        )
+
+        if len(accounts) > 0:
+            account_data = accounts[0]
+            usdt_info = {
+                "free": float(account_data.get("available", 0)),
+                "used": float(account_data.get("locked", 0)),
+                "total": float(account_data.get("accountEquity", 0)),
+            }
+            balance_dict["USDT"] = usdt_info
+
+        logger.info(f"Fetched balance: {balance_dict}")
+        return balance_dict
 
     async def get_positions(
         self, product_type: str = "USDT-FUTURES", symbol: Optional[str] = None
@@ -612,7 +650,13 @@ class BitgetRestClient:
             설정 응답
         """
         endpoint = "/api/v2/mix/account/set-leverage"
-        body = {"symbol": symbol, "marginCoin": margin_coin, "leverage": str(leverage)}
+        body = {
+            "symbol": symbol,
+            "productType": "USDT-FUTURES",  # Bitget API v2 필수 파라미터
+            "marginCoin": margin_coin,
+            "leverage": str(leverage),
+            "holdSide": "long",  # long 또는 short, 교차마진일 경우 long으로 설정
+        }
 
         result = await self._request("POST", endpoint, body=body)
         logger.info(f"Leverage set to {leverage}x for {symbol}")
@@ -653,7 +697,7 @@ class BitgetRestClient:
         endpoint = "/api/v2/mix/market/ticker"
         params = {
             "symbol": symbol,
-            "productType": "USDT-FUTURES"  # Bitget v2 API requires productType
+            "productType": "USDT-FUTURES",  # Bitget v2 API requires productType
         }
 
         result = await self._request("GET", endpoint, params=params)

@@ -104,7 +104,7 @@ class TelegramNotifier:
         self,
         message: str,
         chat_id: Optional[str] = None,
-        parse_mode: str = "HTML",
+        parse_mode: Optional[str] = "HTML",
         disable_notification: bool = False,
         reply_markup: Optional[dict] = None,
     ) -> bool:
@@ -114,7 +114,7 @@ class TelegramNotifier:
         Args:
             message: 전송할 메시지 (HTML 포맷 지원)
             chat_id: 채팅 ID (None이면 기본값 사용)
-            parse_mode: 파싱 모드 (HTML, Markdown, MarkdownV2)
+            parse_mode: 파싱 모드 (HTML, Markdown, MarkdownV2, None이면 파싱 안함)
             disable_notification: 무음 알림 여부
             reply_markup: 인라인 키보드 등 마크업
 
@@ -128,9 +128,12 @@ class TelegramNotifier:
         data = {
             "chat_id": chat_id or self.chat_id,
             "text": message,
-            "parse_mode": parse_mode,
             "disable_notification": disable_notification,
         }
+
+        # parse_mode가 있을 때만 추가
+        if parse_mode is not None:
+            data["parse_mode"] = parse_mode
 
         if reply_markup:
             data["reply_markup"] = reply_markup
@@ -196,14 +199,26 @@ class TelegramNotifier:
 
     # ==================== 시스템 알림 메서드 ====================
 
-    async def notify_bot_start(self, config: BotConfig) -> bool:
+    async def notify_bot_start(self, config: BotConfig, additional_message: str = "") -> bool:
         """봇 시작 알림"""
         if not self.notify_system:
             return False
 
         message = TelegramMessages.bot_start(config)
-        return await self.send_message_with_keyboard(
-            message=message, buttons=self.get_default_keyboard()
+        # 추가 메시지가 있으면 덧붙이기
+        if additional_message:
+            message += additional_message
+
+        # 키보드 생성
+        keyboard = {
+            "keyboard": [[{"text": btn} for btn in row] for row in self.get_default_keyboard()],
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+        }
+
+        # parse_mode=None으로 전송 (HTML 파싱 에러 방지)
+        return await self.send_message(
+            message=message, parse_mode=None, reply_markup=keyboard
         )
 
     async def notify_bot_stop(

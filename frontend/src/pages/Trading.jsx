@@ -486,32 +486,28 @@ export default function Trading() {
 
                             {/* Description */}
                             <div style={{
-                                background: '#fafafa',
-                                padding: 12,
-                                borderRadius: 8,
-                                marginBottom: 12,
-                                border: '1px solid #f0f0f0'
+                                background: '#f8f9fa',
+                                padding: '16px',
+                                borderRadius: 12,
+                                marginBottom: 16,
+                                border: '1px solid #e8e8e8'
                             }}>
-                                <Text style={{ color: '#666' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
                                     <InfoCircleOutlined style={{ marginRight: 8, color: '#1890ff' }} />
+                                    <Text strong style={{ color: '#1890ff' }}>전략 상세 설명</Text>
+                                </div>
+                                <div style={{
+                                    color: '#4a4a4a',
+                                    whiteSpace: 'pre-wrap',
+                                    lineHeight: '1.6',
+                                    fontSize: '14px'
+                                }}>
                                     {selectedStrategyObj.description || '이 전략은 AI 기반 자동 매매 전략입니다. 설정된 조건에 따라 자동으로 포지션을 진입/청산합니다.'}
-                                </Text>
+                                </div>
                             </div>
 
                             {/* Parameters */}
-                            {selectedStrategyObj.params && Object.keys(selectedStrategyObj.params).length > 0 && (
-                                <div>
-                                    <Text strong style={{ display: 'block', marginBottom: 8 }}>파라미터</Text>
-                                    <div style={{ background: '#f5f5f5', padding: 12, borderRadius: 8 }}>
-                                        {Object.entries(selectedStrategyObj.params).map(([key, value]) => (
-                                            <div key={key} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                                                <Text type="secondary">{key}:</Text>
-                                                <Text strong>{String(value)}</Text>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
+
 
                             {/* Risk Level */}
                             <div style={{ marginTop: 12 }}>

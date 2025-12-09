@@ -99,7 +99,14 @@ export default function Notifications() {
     const handleClearResolved = async () => {
         try {
             await alertsAPI.clearResolved();
+            // 삭제된 알림 개수 계산
+            const resolvedCount = notifications.filter(n => n.resolved).length;
             setNotifications(prev => prev.filter(n => !n.resolved));
+            // 통계 업데이트 (total에서 삭제된 개수만큼 빼기)
+            setStatistics(prev => ({
+                ...prev,
+                total: Math.max(0, (prev.total || 0) - resolvedCount)
+            }));
             message.success('읽은 알림을 삭제했습니다');
         } catch (error) {
             console.error('Failed to clear resolved:', error);

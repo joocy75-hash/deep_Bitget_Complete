@@ -167,9 +167,11 @@ export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
             key: 'name',
             width: 200,
             render: (name, record) => (
-                <div>
-                    <div style={{ fontWeight: 'bold' }}>{name}</div>
-                    <div style={{ fontSize: 12, color: '#888' }}>{record.description}</div>
+                <div style={{ cursor: 'pointer' }}>
+                    <div style={{ fontWeight: 'bold', fontSize: '15px', color: '#1d1d1f' }}>{name}</div>
+                    <div style={{ fontSize: 12, color: '#1890ff', marginTop: '4px' }}>
+                        👉 클릭하여 상세 설명 보기
+                    </div>
                 </div>
             ),
         },
@@ -209,43 +211,7 @@ export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
             width: 100,
             align: 'center',
         },
-        {
-            title: '승률',
-            dataIndex: 'winRate',
-            key: 'winRate',
-            width: 100,
-            align: 'right',
-            render: (winRate) => (
-                <span style={{ color: winRate >= 60 ? '#3f8600' : winRate >= 50 ? '#faad14' : '#cf1322' }}>
-                    {winRate.toFixed(1)}%
-                </span>
-            ),
-            sorter: (a, b) => a.winRate - b.winRate,
-        },
-        {
-            title: '거래 수',
-            dataIndex: 'totalTrades',
-            key: 'totalTrades',
-            width: 100,
-            align: 'right',
-            sorter: (a, b) => a.totalTrades - b.totalTrades,
-        },
-        {
-            title: '총 손익',
-            dataIndex: 'profit',
-            key: 'profit',
-            width: 120,
-            align: 'right',
-            render: (profit) => (
-                <span style={{
-                    color: profit >= 0 ? '#3f8600' : '#cf1322',
-                    fontWeight: 'bold',
-                }}>
-                    {profit >= 0 ? '+' : ''}${profit.toFixed(2)}
-                </span>
-            ),
-            sorter: (a, b) => a.profit - b.profit,
-        },
+
         {
             title: '작업',
             key: 'actions',
@@ -329,6 +295,33 @@ export default function StrategyList({ onEdit, onNew, onStrategiesLoaded }) {
                     showTotal: (total) => `총 ${total}개`,
                 }}
                 scroll={{ x: 1200 }}
+                expandable={{
+                    expandedRowRender: (record) => (
+                        <div style={{ padding: '20px', background: '#f8f9fa', borderRadius: '8px' }}>
+                            <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center' }}>
+                                <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#1890ff', marginRight: '8px' }}>
+                                    📖 전략 상세 가이드
+                                </span>
+                                <Tag color="blue">초보자 추천</Tag>
+                            </div>
+                            <div style={{
+                                whiteSpace: 'pre-wrap',
+                                lineHeight: '1.8',
+                                color: '#2c3e50',
+                                fontSize: '14px',
+                                background: '#ffffff',
+                                padding: '24px',
+                                borderRadius: '12px',
+                                border: '1px solid #e8e8e8',
+                                boxShadow: '0 2px 8px rgba(0,0,0,0.02)'
+                            }}>
+                                {record.description || '상세 설명이 없습니다.'}
+                            </div>
+                        </div>
+                    ),
+                    rowExpandable: (record) => true,
+                    expandRowByClick: true, // 행 클릭 시 확장
+                }}
             />
         </Card>
     );

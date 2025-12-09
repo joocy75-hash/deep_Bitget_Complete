@@ -283,20 +283,198 @@ class AlertMonitor:
             logger.error(f"Failed to check position risk for user {user_id}: {e}")
 
     async def run_all_checks(self, user_id: int):
-        """모든 체크 실행"""
+        """모든 체크 실행 - API 호출 최적화 (Rate Limit 방지)"""
         async with AsyncSessionLocal() as session:
             try:
-                # 모든 체크 병렬 실행
-                await self.check_api_connection(session, user_id)
-                await self.check_low_balance(session, user_id)
-                await self.check_high_margin_usage(session, user_id)
-                await self.check_abnormal_loss(session, user_id)
-                await self.check_position_risk(session, user_id)
+                # ⚠️ Rate Limit 방지: 잔고와 포지션을 한 번만 조회
+                client, exchange_name = await ExchangeService.get_user_exchange_client(
+                    session, user_id
+                )
+
+                # 1회 API 호출로 잔고 조회
+                balance = None
+                positions = None
+                try:
+                    balance = await client.fetch_balance()
+                except Exception as e:
+                    logger.error(f"Failed to fetch balance for user {user_id}: {e}")
+                    # API 연결 실패 알림
+                    await self.create_alert(
+                        session,
+                        user_id,
+                        AlertLevel.ERROR,
+                        f"거래소 API 연결에 실패했습니다: {str(e)[:100]}",
+                        alert_type="api_connection_failed",
+                    )
+                    return
+
+                # 1회 API 호출로 포지션 조회
+                try:
+                    positions = await client.fetch_positions()
+                except Exception as e:
+                    logger.error(f"Failed to fetch positions for user {user_id}: {e}")
+                    positions = []
+
+                # 조회한 데이터로 모든 체크 실행 (추가 API 호출 없음)
+                if balance:
+                    await self._check_balance_with_data(session, user_id, balance)
+
+                if positions:
+                    await self._check_positions_with_data(session, user_id, positions)
+
+                if balance:
+                    await self._check_abnormal_loss_with_data(session, user_id, balance)
 
                 self.last_check[user_id] = datetime.utcnow()
+                logger.debug(f"✅ Alert checks completed for user {user_id} (optimized API calls)")
 
             except Exception as e:
                 logger.error(f"Failed to run checks for user {user_id}: {e}")
+
+    async def _check_balance_with_data(self, session: AsyncSession, user_id: int, balance: dict):
+        """잔고 데이터로 잔고 부족 및 증거금 체크 (API 호출 없음)"""
+        try:
+            usdt_balance = balance.get("USDT", {})
+            total = float(usdt_balance.get("total", 0))
+            free = float(usdt_balance.get("free", 0))
+
+            if total > 0:
+                free_percent = (free / total) * 100
+                used = total - free
+                usage_percent = (used / total) * 100
+
+                # 잔고 부족 체크
+                if free_percent < 5:
+                    await self.create_alert(
+                        session,
+                        user_id,
+                        AlertLevel.ERROR,
+                        f"⚠️ 긴급: 사용 가능한 잔고가 {free_percent:.1f}%로 매우 낮습니다! "
+                        f"현재: ${free:.2f} USDT / 총: ${total:.2f} USDT",
+                        alert_type="critical_low_balance",
+                    )
+                elif free_percent < 10:
+                    await self.create_alert(
+                        session,
+                        user_id,
+                        AlertLevel.WARNING,
+                        f"사용 가능한 잔고가 {free_percent:.1f}%로 낮습니다. "
+                        f"현재: ${free:.2f} USDT / 총: ${total:.2f} USDT",
+                        alert_type="low_balance",
+                    )
+
+                # 증거금 사용률 체크
+                if usage_percent >= 90:
+                    await self.create_alert(
+                        session,
+                        user_id,
+                        AlertLevel.ERROR,
+                        f"⚠️ 위험: 증거금 사용률이 {usage_percent:.1f}%로 매우 높습니다! "
+                        f"청산 위험이 있습니다. 사용 중: ${used:.2f} USDT",
+                        alert_type="critical_margin",
+                    )
+                elif usage_percent >= 80:
+                    await self.create_alert(
+                        session,
+                        user_id,
+                        AlertLevel.WARNING,
+                        f"증거금 사용률이 {usage_percent:.1f}%로 높습니다. "
+                        f"사용 중: ${used:.2f} USDT / 총: ${total:.2f} USDT",
+                        alert_type="high_margin",
+                    )
+        except Exception as e:
+            logger.error(f"Failed to check balance data for user {user_id}: {e}")
+
+    async def _check_positions_with_data(self, session: AsyncSession, user_id: int, positions: list):
+        """포지션 데이터로 리스크 체크 (API 호출 없음)"""
+        try:
+            for pos in positions:
+                if pos.get("contracts", 0) == 0:
+                    continue
+
+                symbol = pos.get("symbol", "")
+                unrealized_pnl = float(pos.get("unrealizedPnl", 0))
+                position_value = float(pos.get("contracts", 0)) * float(
+                    pos.get("markPrice", 1)
+                )
+
+                if position_value > 0:
+                    pnl_percent = (unrealized_pnl / position_value) * 100
+
+                    if pnl_percent <= -15:
+                        await self.create_alert(
+                            session,
+                            user_id,
+                            AlertLevel.ERROR,
+                            f"⚠️ {symbol} 포지션에서 {pnl_percent:.1f}%의 큰 손실이 발생 중입니다! "
+                            f"미실현 손실: ${unrealized_pnl:.2f} USDT",
+                            alert_type=f"critical_position_loss_{symbol}",
+                        )
+                    elif pnl_percent <= -10:
+                        await self.create_alert(
+                            session,
+                            user_id,
+                            AlertLevel.WARNING,
+                            f"{symbol} 포지션에서 {pnl_percent:.1f}%의 손실이 발생 중입니다. "
+                            f"미실현 손실: ${unrealized_pnl:.2f} USDT",
+                            alert_type=f"position_loss_{symbol}",
+                        )
+        except Exception as e:
+            logger.error(f"Failed to check positions data for user {user_id}: {e}")
+
+    async def _check_abnormal_loss_with_data(self, session: AsyncSession, user_id: int, balance: dict):
+        """잔고 데이터로 비정상 손실 체크 (API 호출 없음)"""
+        try:
+            # 오늘의 거래 조회
+            today_start = datetime.utcnow().replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+
+            result = await session.execute(
+                select(Trade).where(
+                    and_(
+                        Trade.user_id == user_id,
+                        Trade.created_at >= today_start,
+                        Trade.pnl.isnot(None),
+                    )
+                )
+            )
+            trades = result.scalars().all()
+
+            if not trades:
+                return
+
+            # 총 손익 계산
+            total_pnl = sum(float(trade.pnl or 0) for trade in trades)
+
+            # 현재 잔고
+            current_balance = float(balance.get("USDT", {}).get("total", 0))
+
+            if current_balance > 0:
+                initial_balance = current_balance - total_pnl
+                if initial_balance > 0:
+                    loss_percent = (total_pnl / initial_balance) * 100
+
+                    if loss_percent <= -10:
+                        await self.create_alert(
+                            session,
+                            user_id,
+                            AlertLevel.ERROR,
+                            f"⚠️ 긴급: 오늘 {loss_percent:.1f}%의 큰 손실이 발생했습니다! "
+                            f"손실: ${total_pnl:.2f} USDT (거래 {len(trades)}건)",
+                            alert_type="critical_daily_loss",
+                        )
+                    elif loss_percent <= -5:
+                        await self.create_alert(
+                            session,
+                            user_id,
+                            AlertLevel.WARNING,
+                            f"오늘 {loss_percent:.1f}%의 손실이 발생했습니다. "
+                            f"손실: ${total_pnl:.2f} USDT (거래 {len(trades)}건)",
+                            alert_type="abnormal_daily_loss",
+                        )
+        except Exception as e:
+            logger.error(f"Failed to check abnormal loss data for user {user_id}: {e}")
 
 
 # 싱글톤 인스턴스

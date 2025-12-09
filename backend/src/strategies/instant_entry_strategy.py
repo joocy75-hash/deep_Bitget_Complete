@@ -25,15 +25,8 @@ def check_entry_signal(candles, params):
     Returns:
         'LONG' for immediate entry, None otherwise
     """
-    global _entry_triggered
-
-    # 이미 진입했으면 더 이상 시그널 생성 안함
-    if _entry_triggered:
-        return None
-
-    # 캔들이 최소 5개 이상이면 바로 진입
+    # 캔들이 최소 5개 이상이면 바로 진입 (테스트용: 항상 LONG)
     if len(candles) >= 5:
-        _entry_triggered = True
         print(f"🚀 Instant Entry: Triggering LONG signal! Candles: {len(candles)}")
         return "LONG"
 

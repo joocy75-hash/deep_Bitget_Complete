@@ -15,7 +15,7 @@ class AlertScheduler:
     def __init__(self):
         self.running = False
         self.active_users: Set[int] = set()
-        self.check_interval = 60  # 60초마다 체크
+        self.check_interval = 300  # 300초(5분)마다 체크 - Rate Limit 방지
 
     async def get_active_users(self) -> Set[int]:
         """활성 사용자 목록 조회 (봇이 실행 중인 사용자)"""

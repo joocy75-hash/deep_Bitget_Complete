@@ -1,445 +1,399 @@
-# 🚀 배포 전 체크리스트
+# 🚀 배포 전 점검 체크리스트
 
-**작성일**: 2025-12-03
-**현재 상태**: 실전 매매 테스트 성공 ✅
+> 최종 점검일: 2025-12-05
 
----
+## 📋 목차
 
-## ✅ 완료된 작업
-
-1. **Mock 데이터 제거** ✅
-   - mock_price_generator.py 삭제
-   - Mock 잔고/포지션 fallback 제거
-   - Mock 캔들 생성 제거
-
-2. **실전 API 연동** ✅
-   - Bitget API 키 암호화 저장
-   - CCXT 라이브러리로 안정적인 시장 데이터 수집
-   - REST API로 주문 실행 성공
-
-3. **실제 거래 검증** ✅
-   - ETH/USDT 0.02 SHORT 포지션 체결 확인
-   - Order ID: 1380021839811223553
-   - Entry: $3,056.37
+1. [긴급 필수 작업](#-긴급-필수-작업)
+2. [보안 점검](#-보안-점검)
+3. [환경 설정](#️-환경-설정)
+4. [코드 품질](#-코드-품질)
+5. [프로덕션 빌드](#️-프로덕션-빌드)
+6. [인프라 및 배포](#-인프라-및-배포)
+7. [테스트](#-테스트)
+8. [권장 개선사항](#-권장-개선사항)
 
 ---
 
-## ⚠️ 배포 전 필수 수정사항
+## 🔴 긴급 필수 작업
 
-### 1. **차트 서비스 복구** (HIGH PRIORITY)
-
-**현재 문제**:
-- 차트 서비스가 market_queue를 소비해서 봇이 데이터를 받지 못함
-- 임시로 차트 서비스를 완전히 비활성화한 상태
-
-**해결 방법**:
-```python
-# backend/src/database/db.py 수정
-
-# 현재 (임시):
-asyncio.create_task(ccxt_price_collector(market_queue))
-# chart_service 비활성화됨
-
-# 수정해야 할 내용:
-chart_queue = asyncio.Queue(maxsize=1000)
-asyncio.create_task(ccxt_price_collector(market_queue, chart_queue))
-chart_service = await get_chart_service(chart_queue)
-```
-
-**수정 파일**:
-- `backend/src/database/db.py`: 차트 큐 추가
-- `backend/src/services/ccxt_price_collector.py`: 두 큐에 동시 전송
-
-**테스트**:
-```bash
-# 백엔드 재시작 후
-curl http://localhost:8000/health
-# 프론트엔드에서 차트가 업데이트되는지 확인
-```
-
----
-
-### 2. **환경 변수 설정**
-
-**필수 환경 변수**:
-```bash
-# .env 파일 생성
-DATABASE_URL=sqlite+aiosqlite:///./trading.db
-ENCRYPTION_KEY=<32바이트 Base64 인코딩 키>
-JWT_SECRET=<강력한 시크릿 키>
-```
-
-**Encryption Key 생성**:
-```python
-from cryptography.fernet import Fernet
-key = Fernet.generate_key()
-print(key.decode())  # 이 값을 ENCRYPTION_KEY로 사용
-```
-
-**배포 환경별 설정**:
-- **개발**: `trading.db` (SQLite)
-- **운영**: PostgreSQL 권장 (`postgresql+asyncpg://...`)
-
----
-
-### 3. **프로덕션 설정**
-
-#### 백엔드 (FastAPI)
-
-**config.py 수정**:
-```python
-# 현재는 개발 모드
-DEBUG = os.getenv("DEBUG", "True") == "True"
-
-# 운영 환경에서는:
-DEBUG = False
-ALLOWED_HOSTS = ["yourdomain.com", "api.yourdomain.com"]
-```
-
-**CORS 설정**:
-```python
-# backend/src/main.py
-origins = [
-    "https://yourdomain.com",  # 실제 도메인으로 변경
-]
-```
-
-**Uvicorn 실행**:
-```bash
-# 개발:
-uvicorn src.main:app --reload
-
-# 운영:
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-#### 프론트엔드
-
-**환경 변수** (`frontend/.env.production`):
-```bash
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com
-NEXT_PUBLIC_WS_URL=wss://api.yourdomain.com
-```
-
-**빌드**:
-```bash
-cd frontend
-npm run build
-npm start
-```
-
----
-
-### 4. **데이터베이스 마이그레이션**
-
-**SQLite → PostgreSQL 전환** (운영 환경 권장):
+### 1. 환경 변수 설정 필수
 
 ```bash
-# PostgreSQL 설치 및 설정
-createdb trading_prod
-
-# 환경 변수 변경
-DATABASE_URL=postgresql+asyncpg://user:password@localhost/trading_prod
-
-# 마이그레이션
-alembic upgrade head
+# 반드시 변경해야 할 환경 변수들
+POSTGRES_PASSWORD=강력한-비밀번호-32자-이상
+REDIS_PASSWORD=강력한-비밀번호-32자-이상
+JWT_SECRET=최소-64자-랜덤-문자열
+ENCRYPTION_KEY=Fernet-키-python으로-생성
 ```
 
-**이유**:
-- SQLite는 동시 쓰기 성능이 낮음
-- 운영 환경에서는 PostgreSQL이 안정적
-
----
-
-### 5. **보안 강화**
-
-#### API 키 보호
-```python
-# 현재: 암호화되어 DB 저장 ✅
-# 추가 권장사항:
-- API 키 입력 시 HTTPS 필수
-- Redis/Memcached로 세션 관리
-```
-
-#### Rate Limiting
-```python
-# backend/src/main.py에 추가
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
-limiter = Limiter(key_func=get_remote_address)
-
-@app.post("/bot/start")
-@limiter.limit("5/minute")  # 1분에 5회 제한
-async def start_bot(...):
-    ...
-```
-
-#### HTTPS 강제
-```python
-# Nginx 리버스 프록시 설정:
-server {
-    listen 443 ssl;
-    server_name api.yourdomain.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:8000;
-    }
-}
-```
-
----
-
-### 6. **로깅 및 모니터링**
-
-#### 로그 파일 로테이션
-```python
-# backend/src/config.py
-import logging.handlers
-
-handler = logging.handlers.RotatingFileHandler(
-    "/var/log/trading_bot.log",
-    maxBytes=10*1024*1024,  # 10MB
-    backupCount=5
-)
-```
-
-#### 에러 알림
-```python
-# Sentry, Datadog, 또는 CloudWatch 연동
-import sentry_sdk
-
-sentry_sdk.init(
-    dsn="your-sentry-dsn",
-    traces_sample_rate=1.0,
-)
-```
-
----
-
-### 7. **성능 최적화**
-
-#### Redis 캐싱
-```python
-# 잔고, 포지션 등 자주 조회되는 데이터 캐싱
-import aioredis
-
-redis = await aioredis.create_redis_pool('redis://localhost')
-```
-
-#### Connection Pooling
-```python
-# CCXT exchange 객체 재사용
-# 현재는 매번 새로 생성하지만, 풀링하면 성능 향상
-```
-
----
-
-### 8. **테스트 코드 작성**
+**JWT_SECRET 생성:**
 
 ```bash
-# 필수 테스트 항목:
-- API 인증 테스트
-- 주문 실행 시뮬레이션
-- 전략 시그널 검증
-- WebSocket 연결 테스트
+python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-```python
-# backend/tests/test_bot_runner.py
-async def test_bot_executes_order():
-    # Mock Bitget API
-    # 전략 시그널 생성
-    # 주문 실행 검증
-    pass
+**ENCRYPTION_KEY 생성:**
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### 2. 기본값 비밀번호 변경
+
+| 파일 | 위치 | 현재 값 | 상태 |
+|------|------|---------|------|
+| `docker-compose.yml` | Line 11 | `change-this-password` | ⚠️ 변경 필요 |
+| `docker-compose.yml` | Line 30 | `change-this-redis-password` | ⚠️ 변경 필요 |
+| `docker-compose.yml` | Line 56 | `your-super-secret-jwt-key-change-this` | ⚠️ 변경 필요 |
+| `config.py` | Line 99 | `jwt_secret: "change_me"` | ⚠️ 변경 필요 |
+
+### 3. 도메인 설정 변경
+
+```nginx
+# nginx/nginx.conf - Line 52, 66, 102
+server_name yourdomain.com www.yourdomain.com api.yourdomain.com;
+
+# Line 161
+add_header Access-Control-Allow-Origin "https://yourdomain.com" always;
 ```
 
 ---
 
-## 🔧 배포 스크립트
+## 🔒 보안 점검
 
-### Docker Compose (권장)
+### ✅ 완료된 보안 기능
 
-```yaml
-# docker-compose.yml
-version: '3.8'
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| JWT 인증 | ✅ | `jwt_auth.py` |
+| 비밀번호 해싱 (bcrypt) | ✅ | `passlib.hash.bcrypt` |
+| API 키 암호화 | ✅ | Fernet 암호화 |
+| 2FA (TOTP) | ✅ | Google Authenticator 호환 |
+| Rate Limiting | ✅ | IP 및 사용자 기반 |
+| CORS 설정 | ✅ | 환경변수로 구성 가능 |
+| Admin IP 화이트리스트 | ✅ | 프로덕션에서만 활성화 |
+| HTTPS 강제 | ✅ | nginx 설정 |
+| 보안 헤더 | ✅ | HSTS, X-Frame-Options 등 |
+| Non-root 사용자 | ✅ | Docker에서 실행 |
 
-services:
-  backend:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://user:password@postgres/trading
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-    depends_on:
-      - postgres
-      - redis
+### ⚠️ 추가 권장 보안 작업
 
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+#### 1. 관리자 IP 화이트리스트 설정
 
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=trading
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+```python
+# backend/src/middleware/admin_ip_whitelist.py
+# ADMIN_ALLOWED_IPS 환경변수 설정
+ADMIN_ALLOWED_IPS=1.2.3.4,5.6.7.8
+```
 
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
+#### 2. 로그인 실패 제한 강화
 
-volumes:
-  postgres_data:
+```python
+# 현재: Rate limit만 적용
+# 권장: 계정 잠금 기능 추가 (5회 실패 시 15분 잠금)
+```
+
+#### 3. API 키 마스킹 확인
+
+- API 키 조회 시 부분 마스킹 적용됨 ✅
+- 단, 복호화 횟수 제한 (시간당 3회) 확인 ✅
+
+#### 4. SQL Injection 방지
+
+- SQLAlchemy ORM 사용으로 기본 방지 ✅
+- 사용자 입력 검증 추가 권장
+
+---
+
+## ⚙️ 환경 설정
+
+### 프로덕션 환경변수 체크리스트
+
+```bash
+# .env.production 예시
+
+# === 데이터베이스 ===
+DATABASE_URL=postgresql+asyncpg://trading_user:강력한비밀번호@postgres:5432/trading_prod
+POSTGRES_PASSWORD=강력한비밀번호
+
+# === 보안 ===
+JWT_SECRET=매우긴랜덤문자열최소64자이상필수
+ENCRYPTION_KEY=Fernet생성키
+
+# === Redis ===
+REDIS_PASSWORD=레디스비밀번호
+
+# === 환경 ===
+ENVIRONMENT=production
+DEBUG=False
+LOG_LEVEL=WARNING
+
+# === CORS ===
+CORS_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+
+# === 텔레그램 (선택) ===
+TELEGRAM_BOT_TOKEN=봇토큰
+TELEGRAM_CHAT_ID=채팅ID
+
+# === DeepSeek AI (선택) ===
+DEEPSEEK_API_KEY=API키
+
+# === 프론트엔드 ===
+VITE_API_URL=https://api.yourdomain.com
+VITE_WS_URL=wss://api.yourdomain.com
+```
+
+### 프론트엔드 환경변수
+
+```bash
+# frontend/.env.production
+VITE_API_URL=https://api.yourdomain.com
+VITE_WS_URL=wss://api.yourdomain.com
+```
+
+---
+
+## 🧹 코드 품질
+
+### 1. console.log 제거 필요 (48개 발견)
+
+| 파일 | 개수 | 우선순위 |
+|------|------|----------|
+| `Trading.jsx` | 5 | 높음 |
+| `TradingChart.jsx` | 7 | 높음 |
+| `Settings.jsx` | 10 | 중간 |
+| `WebSocketContext.jsx` | 12 | 낮음 (디버깅용) |
+| `Dashboard.jsx` | 1 | 낮음 |
+| 기타 | 13 | 낮음 |
+
+**권장 조치:**
+
+```javascript
+// vite.config.js에 추가
+export default defineConfig({
+  esbuild: {
+    drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
+  },
+});
+```
+
+### 2. 에러 핸들링 확인
+
+- ✅ 전역 에러 핸들러 등록됨 (`error_handler.py`)
+- ✅ API 에러 응답 형식 통일됨
+- ⚠️ 프론트엔드 에러 바운더리 권장
+
+### 3. 타입 체크
+
+- 백엔드: Pydantic 모델로 타입 검증 ✅
+- 프론트엔드: TypeScript 미사용 (권장)
+
+---
+
+## 🏗️ 프로덕션 빌드
+
+### 백엔드 체크리스트
+
+- [x] Dockerfile 최적화 (multi-stage build)
+- [x] non-root 사용자 실행
+- [x] Health check 설정
+- [x] Uvicorn workers 설정 (4개)
+- [ ] Gunicorn + Uvicorn 권장 (고성능)
+
+### 프론트엔드 체크리스트
+
+- [x] Dockerfile 최적화 (multi-stage build)
+- [x] non-root 사용자 실행
+- [x] Health check 설정
+- [x] Vite 프로덕션 빌드 설정
+- [ ] `standalone` 출력 모드 확인 필요
+
+**프론트엔드 vite.config.js 확인:**
+
+```javascript
+// vite.config.js
+export default defineConfig({
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'antd'],
+          charts: ['lightweight-charts', 'recharts'],
+        },
+      },
+    },
+  },
+});
+```
+
+---
+
+## 🌐 인프라 및 배포
+
+### SSL/TLS 인증서
+
+```bash
+# Let's Encrypt 인증서 발급
+sudo certbot certonly --standalone -d yourdomain.com -d www.yourdomain.com -d api.yourdomain.com
+
+# 인증서 복사
+cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem ./nginx/ssl/
+cp /etc/letsencrypt/live/yourdomain.com/privkey.pem ./nginx/ssl/
 ```
 
 ### 배포 명령어
 
 ```bash
-# 1. 이미지 빌드
-docker-compose build
+# 1. 환경변수 파일 생성
+cp .env.example .env
+# .env 파일 수정
 
-# 2. 서비스 시작
-docker-compose up -d
+# 2. 백엔드 마이그레이션
+docker-compose run --rm backend alembic upgrade head
 
-# 3. 로그 확인
-docker-compose logs -f backend
+# 3. 서비스 시작
+docker-compose --profile production up -d
 
-# 4. 헬스 체크
-curl http://localhost:8000/health
+# 4. 로그 확인
+docker-compose logs -f
+```
+
+### 모니터링 권장 사항
+
+- [ ] Prometheus + Grafana 설정 (`docker-compose.monitoring.yml`)
+- [ ] 로그 수집 (ELK 스택 또는 Loki)
+- [ ] 알림 설정 (Slack, 이메일)
+- [ ] 업타임 모니터링 (UptimeRobot 등)
+
+---
+
+## 🧪 테스트
+
+### 배포 전 수동 테스트 체크리스트
+
+#### 인증
+
+- [ ] 회원가입 테스트
+- [ ] 로그인 테스트
+- [ ] 2FA 설정 및 로그인
+- [ ] 비밀번호 변경
+- [ ] 로그아웃
+
+#### 트레이딩
+
+- [ ] 차트 시간대 변경 (1분 → 1일)
+- [ ] 코인 변경 (BTC → ETH)
+- [ ] API 키 저장
+- [ ] 봇 시작/중지
+
+#### 백테스트
+
+- [ ] 단일 백테스트 실행
+- [ ] 결과 확인
+
+#### 관리자
+
+- [ ] 관리자 로그인
+- [ ] 사용자 목록 조회
+- [ ] 봇 상태 모니터링
+
+---
+
+## 💡 권장 개선사항
+
+### 높은 우선순위
+
+| 항목 | 설명 | 예상 시간 |
+|------|------|-----------|
+| console.log 제거 | 프로덕션 빌드 시 자동 제거 설정 | 30분 |
+| 에러 바운더리 | React 에러 경계 컴포넌트 추가 | 1시간 |
+| 환경변수 검증 | 필수 환경변수 누락 시 시작 실패 | 1시간 |
+
+### 중간 우선순위
+
+| 항목 | 설명 | 예상 시간 |
+|------|------|-----------|
+| TypeScript 마이그레이션 | 점진적 타입 추가 | 1주 |
+| 단위 테스트 추가 | pytest, jest 설정 | 1주 |
+| API 문서 업데이트 | OpenAPI 스펙 보완 | 2시간 |
+
+### 낮은 우선순위
+
+| 항목 | 설명 | 예상 시간 |
+|------|------|-----------|
+| PWA 지원 | 오프라인 지원, 앱 설치 | 1일 |
+| 다국어 지원 | i18n 라이브러리 적용 | 3일 |
+| 다크모드 | 시스템 테마 감지 | 1일 |
+
+---
+
+## 📝 배포 전 최종 체크리스트
+
+```
+□ 1. 환경변수 모두 설정 완료
+□ 2. 기본 비밀번호 모두 변경
+□ 3. SSL 인증서 설치
+□ 4. 도메인 DNS 설정
+□ 5. nginx.conf 도메인 수정
+□ 6. CORS 설정 확인
+□ 7. 데이터베이스 마이그레이션
+□ 8. 프론트엔드 빌드 테스트
+□ 9. 백엔드 health check 확인
+□ 10. 로그 수집 설정
+□ 11. 백업 스크립트 설정
+□ 12. 모니터링 알림 설정
 ```
 
 ---
 
-## 📋 배포 후 확인사항
+## 📞 문의
 
-### 1. 헬스 체크
+문제 발생 시 `DEVELOPMENT_GUIDE.md` 및 `ADMIN_COMPLETION_GUIDE.md` 참조
+
+---
+
+## 🔄 진행 중인 작업 (2025-12-06)
+
+### ✅ 완료된 작업
+
+#### 회원가입 기능 구현
+
+- [x] 백엔드: User 모델에 `name`, `phone` 필드 추가
+- [x] 백엔드: RegisterRequest 스키마 업데이트 (이름, 전화번호, 비밀번호 확인)
+- [x] 프론트엔드: Login 페이지에 로그인/회원가입 탭 UI 추가
+- [x] 프론트엔드: 회원가입 폼 구현 (이메일, 이름, 전화번호, 비밀번호)
+
+#### 소셜 로그인 (OAuth) 기능 구현
+
+- [x] 백엔드: User 모델에 `oauth_provider`, `oauth_id`, `profile_image` 필드 추가
+- [x] 백엔드: Google OAuth 2.0 엔드포인트 구현 (`/auth/google/login`, `/auth/google/callback`)
+- [x] 백엔드: Kakao OAuth 엔드포인트 구현 (`/auth/kakao/login`, `/auth/kakao/callback`)
+- [x] 프론트엔드: Google/Kakao 로그인 버튼 추가
+- [x] 프론트엔드: OAuth 콜백 페이지 구현 (`/oauth/callback`)
+- [x] DB 마이그레이션 파일 생성
+
+### ⏳ 예정된 작업 (OAuth 자격 증명)
+
+#### Google OAuth 설정 (미완료)
+
+- [ ] Google Cloud Console에서 OAuth 클라이언트 생성
+- [ ] 환경변수 설정: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+- [ ] 리다이렉트 URI 등록: `http://localhost:8000/auth/google/callback`
+
+#### Kakao OAuth 설정 (미완료)
+
+- [ ] Kakao Developers에서 애플리케이션 생성
+- [ ] 환경변수 설정: `KAKAO_CLIENT_ID`
+- [ ] 카카오 로그인 활성화 및 Redirect URI 등록
+
+> 📖 상세 설정 가이드: `OAUTH_SETUP_GUIDE.md` 참조
+
+### 📋 DB 마이그레이션 필요
+
 ```bash
-curl https://api.yourdomain.com/health
-# Expected: {"status":"ok"}
-```
-
-### 2. 봇 상태 확인
-```bash
-# 로그인
-TOKEN=$(curl -s -X POST https://api.yourdomain.com/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@admin.com","password":"admin123"}' | jq -r '.access_token')
-
-# 봇 상태
-curl -s https://api.yourdomain.com/bot/status \
-  -H "Authorization: Bearer $TOKEN" | jq .
-```
-
-### 3. 실시간 데이터 수신
-```bash
-# WebSocket 연결 테스트
-wscat -c wss://api.yourdomain.com/ws/user/6?token=$TOKEN
-```
-
-### 4. 거래 내역 확인
-```bash
-curl -s https://api.yourdomain.com/trades/recent-trades?limit=10 \
-  -H "Authorization: Bearer $TOKEN" | jq .
+cd backend
+alembic upgrade head
 ```
 
 ---
-
-## ⚡ 긴급 대응
-
-### 봇 긴급 정지
-```bash
-curl -X POST https://api.yourdomain.com/bot/stop \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### 모든 포지션 강제 청산
-```python
-# backend/scripts/emergency_close_all.py
-async def close_all_positions():
-    # 모든 사용자의 열린 포지션 조회
-    # Bitget API로 시장가 청산
-    pass
-```
-
----
-
-## 📊 모니터링 대시보드
-
-### Grafana + Prometheus
-```yaml
-# docker-compose.yml에 추가
-  prometheus:
-    image: prom/prometheus
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-
-  grafana:
-    image: grafana/grafana
-    ports:
-      - "3001:3000"
-```
-
-**모니터링 지표**:
-- 봇 실행 상태
-- 주문 성공/실패율
-- API 응답 시간
-- WebSocket 연결 수
-- 데이터베이스 쿼리 성능
-
----
-
-## 🚨 알려진 이슈 및 해결책
-
-### 1. 차트 서비스 비활성화
-**증상**: 프론트엔드 차트가 업데이트되지 않음
-**원인**: market_queue 경쟁 이슈
-**해결**: 위의 "차트 서비스 복구" 참조
-
-### 2. WebSocket ping 경고
-**증상**: `Invalid JSON: ping`
-**영향**: 없음 (정상 동작)
-**해결**: WebSocket 핸들러에서 ping 메시지 무시하도록 수정
-
-### 3. 전략 시그니처 불일치
-**증상**: `unexpected keyword argument 'current_price'`
-**해결**: ✅ `strategy_loader.py`에서 전략별로 다른 시그니처 사용하도록 수정됨
-
----
-
-## 📝 체크리스트 요약
-
-- [ ] 차트 서비스 복구 (두 개의 큐 사용)
-- [ ] 환경 변수 설정 (.env 파일)
-- [ ] CORS 도메인 설정
-- [ ] PostgreSQL 마이그레이션 (운영 환경)
-- [ ] HTTPS 인증서 설정
-- [ ] Rate Limiting 추가
-- [ ] 로그 로테이션 설정
-- [ ] Docker Compose 파일 작성
-- [ ] 모니터링 대시보드 구축
-- [ ] 긴급 대응 스크립트 준비
-- [ ] 백업 전략 수립
-
----
-
-**참고 문서**:
-- [REAL_TRADING_SETUP.md](REAL_TRADING_SETUP.md)
-- [ORDER_EXECUTION_DIAGNOSIS.md](ORDER_EXECUTION_DIAGNOSIS.md)
-- Bitget API Docs: https://bitgetlimited.github.io/apidoc/en/mix/
-
-**마지막 테스트**:
-- 실전 거래 성공 ✅
-- ETH SHORT 0.02 @ $3,056.37
-- Order ID: 1380021839811223553

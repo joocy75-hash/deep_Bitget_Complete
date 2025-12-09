@@ -509,12 +509,13 @@ class BotRunner:
 
                         # 새로운 전략 로더 사용 (포지션 정보 포함)
                         try:
+                            # 테스트 모드: current_position을 None으로 전달하여 항상 진입 시그널 허용
                             signal_result = generate_signal_with_strategy(
                                 strategy_code=strategy.code,
                                 current_price=price,
                                 candles=candles,
                                 params_json=strategy.params,
-                                current_position=current_position,
+                                current_position=None,  # 테스트 모드: 항상 새 진입 허용
                             )
 
                             signal_action = signal_result.get("action", "hold")
@@ -763,9 +764,36 @@ class BotRunner:
                                     if signal_action == "buy"
                                     else OrderSide.SELL
                                 )
+
+                                # 최소 주문량 강제 적용 (심볼별) - 테스트 모드: 항상 최소 주문량 사용
+                                min_order_sizes = {
+                                    "BTCUSDT": 0.001,
+                                    "ETHUSDT": 0.01,
+                                }
+                                min_order_size = min_order_sizes.get(symbol, 0.001)
+                                # 테스트 모드: 계산된 크기와 관계없이 최소 주문량 사용
+                                if signal_size != min_order_size:
+                                    logger.warning(
+                                        f"⚠️ TEST MODE: Using minimum order size {min_order_size} instead of {signal_size}"
+                                    )
+                                    signal_size = min_order_size
+
                                 logger.info(
                                     f"Executing {signal_action} order for user {user_id} at {price} (size: {signal_size}, confidence: {signal_confidence:.2f})"
                                 )
+
+                                # 주문 전에 레버리지 설정 (Bitget 요구사항)
+                                try:
+                                    await bitget_client.set_leverage(
+                                        symbol=symbol,
+                                        leverage=allowed_leverage,
+                                        margin_coin="USDT",
+                                    )
+                                    logger.info(
+                                        f"Leverage set to {allowed_leverage}x for {symbol}"
+                                    )
+                                except Exception as lev_err:
+                                    logger.warning(f"Failed to set leverage: {lev_err}")
 
                                 # Bitget 시장가 주문 실행
                                 order_result = await bitget_client.place_market_order(
