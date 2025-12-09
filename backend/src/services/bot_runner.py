@@ -29,6 +29,7 @@ from ..services.trade_executor import (
 from ..services.bitget_rest import get_bitget_rest, OrderSide
 from ..utils.crypto_secrets import decrypt_secret
 from ..websockets.ws_server import broadcast_to_user
+from ..services.telegram import get_telegram_notifier, TradeInfo, TradeResult
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +316,10 @@ class BotRunner:
                 # 1. 전략 로드
                 try:
                     strategy = await self._get_user_strategy(session, user_id)
-                    logger.info(f"Loaded strategy '{strategy.name}' for user {user_id}")
+                    code_preview = strategy.code[:100] if strategy.code else "None"
+                    logger.info(
+                        f"Loaded strategy '{strategy.name}' for user {user_id}, code length: {len(strategy.code) if strategy.code else 0}, preview: {code_preview}..."
+                    )
                 except Exception as e:
                     logger.error(
                         f"Failed to load strategy for user {user_id}: {e}",
@@ -389,16 +393,14 @@ class BotRunner:
                 # 3. 과거 캔들 데이터 로드 (CRITICAL: 전략 정확도 향상)
                 candle_buffer = deque(maxlen=200)
 
-                try:
-                    # 전략 파라미터에서 심볼과 타임프레임 가져오기
-                    strategy_params = (
-                        json.loads(strategy.params) if strategy.params else {}
-                    )
-                    symbol = strategy_params.get("symbol", "BTC/USDT").replace(
-                        "/", ""
-                    )  # "BTCUSDT"
-                    timeframe = strategy_params.get("timeframe", "1h")
+                # 전략 파라미터에서 심볼과 타임프레임 미리 가져오기 (try 블록 밖에서 정의)
+                strategy_params = json.loads(strategy.params) if strategy.params else {}
+                symbol = strategy_params.get("symbol", "BTC/USDT").replace(
+                    "/", ""
+                )  # "BTCUSDT"
+                timeframe = strategy_params.get("timeframe", "1h")
 
+                try:
                     # Bitget API에서 과거 200개 캔들 가져오기
                     historical = await bitget_client.get_historical_candles(
                         symbol=symbol, interval=timeframe, limit=200
@@ -458,15 +460,31 @@ class BotRunner:
                         price = float(market.get("price", 0))
                         market_symbol = market.get("symbol", "BTCUSDT")
 
+                        # 심볼 정규화: BTC/USDT, BTCUSDT, BTC-USDT 모두 BTCUSDT로 변환
+                        normalized_market = (
+                            market_symbol.replace("/", "").replace("-", "").upper()
+                        )
+                        normalized_strategy = (
+                            symbol.replace("/", "").replace("-", "").upper()
+                        )
+
                         # Filter: Only process market data matching strategy symbol
-                        if market_symbol != symbol:
-                            logger.debug(
-                                f"Skipping {market_symbol} (strategy needs {symbol})"
-                            )
+                        if normalized_market != normalized_strategy:
+                            # 10번에 한 번만 로그 (너무 많은 로그 방지)
+                            if hasattr(self, "_skip_log_count"):
+                                self._skip_log_count = (
+                                    getattr(self, "_skip_log_count", 0) + 1
+                                )
+                                if self._skip_log_count % 100 == 0:
+                                    logger.debug(
+                                        f"Skipped {self._skip_log_count} market data (got {normalized_market}, need {normalized_strategy})"
+                                    )
+                            else:
+                                self._skip_log_count = 1
                             continue  # Skip this market data
 
                         logger.info(
-                            f"Processing market data: {market_symbol} @ ${price:.2f}"
+                            f"🔄 Processing market data: {market_symbol} @ ${price:,.2f} (user {user_id})"
                         )
 
                         if price <= 0:
@@ -502,9 +520,74 @@ class BotRunner:
                             signal_action = signal_result.get("action", "hold")
                             signal_confidence = signal_result.get("confidence", 0)
                             signal_reason = signal_result.get("reason", "")
-                            signal_size = signal_result.get(
-                                "size", 0.01
-                            )  # Bitget minimum: 0.01 BTC
+                            signal_size_from_strategy = signal_result.get("size", None)
+                            size_metadata = signal_result.get("size_metadata", None)
+
+                            # 실제 잔고 기반으로 주문 크기 계산
+                            # ⚠️ 중요: buy/sell 시그널일 때만 잔고 조회 (API Rate Limit 방지)
+                            logger.info(
+                                f"🔍 Signal check - action:{signal_action}, size_from_strategy:{signal_size_from_strategy}, size_metadata:{size_metadata}"
+                            )
+                            if (
+                                signal_action in {"buy", "sell"}
+                                and signal_size_from_strategy is None
+                                and size_metadata
+                            ):
+                                logger.info(
+                                    f"💰 Starting balance query for user {user_id}"
+                                )
+                                try:
+                                    # Bitget 계정 잔고 조회 (bitget_client는 이미 초기화된 ccxt 객체)
+                                    balance = await bitget_client.fetch_balance(
+                                        {"type": "swap"}
+                                    )
+                                    usdt_balance = balance.get("USDT", {})
+                                    available_balance = float(
+                                        usdt_balance.get("free", 0)
+                                    )
+
+                                    if available_balance > 0:
+                                        # 전략 파라미터에서 비율 가져오기
+                                        position_size_percent = size_metadata.get(
+                                            "position_size_percent", 0.4
+                                        )
+                                        leverage = size_metadata.get("leverage", 10)
+
+                                        # 주문 크기 계산 (USDT → BTC)
+                                        position_value_usdt = (
+                                            available_balance
+                                            * position_size_percent
+                                            * leverage
+                                        )
+                                        signal_size = (
+                                            position_value_usdt / price
+                                        )  # BTC 수량
+
+                                        # 최소 주문 크기 확인 (Bitget: 0.001 BTC)
+                                        if signal_size < 0.001:
+                                            signal_size = 0.001
+                                            logger.warning(
+                                                f"⚠️ Calculated size {signal_size:.6f} too small, using minimum 0.001 BTC"
+                                            )
+
+                                        logger.info(
+                                            f"✅ Calculated order size for user {user_id}: {signal_size:.6f} BTC "
+                                            f"(balance: ${available_balance:.2f}, position: {position_size_percent * 100:.1f}%, leverage: {leverage}x)"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"⚠️ No available balance for user {user_id}, using minimum size"
+                                        )
+                                        signal_size = 0.001  # 최소 크기
+                                except Exception as e:
+                                    logger.error(
+                                        f"❌ Failed to calculate order size for user {user_id}: {e}"
+                                    )
+                                    signal_size = 0.001  # 에러 시 최소 크기
+                            elif signal_size_from_strategy is not None:
+                                signal_size = signal_size_from_strategy
+                            else:
+                                signal_size = 0.001  # 기본 최소 크기
 
                             logger.info(
                                 f"Strategy signal for user {user_id}: {signal_action} (confidence: {signal_confidence:.2f}, reason: {signal_reason})"
@@ -562,6 +645,25 @@ class BotRunner:
                                     },
                                 )
                                 logger.info(f"Position closed for user {user_id}")
+
+                                # 📱 텔레그램 알림 전송 (청산)
+                                try:
+                                    notifier = get_telegram_notifier()
+                                    if notifier.is_enabled():
+                                        # 간단한 청산 알림 메시지 전송
+                                        close_message = f"""🔔 <b>포지션 청산</b>
+
+📈 심볼: {symbol}
+📍 청산가: ${price:,.2f}
+📝 사유: {signal_reason}
+
+⏰ 시간: {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC"""
+                                        await notifier.send_message(close_message)
+                                        logger.info(
+                                            f"📱 Telegram: Position close notification sent for user {user_id}"
+                                        )
+                                except Exception as e:
+                                    logger.warning(f"텔레그램 청산 알림 전송 실패: {e}")
 
                             except Exception as e:
                                 logger.error(
@@ -714,6 +816,30 @@ class BotRunner:
                                 logger.info(
                                     f"Bitget order executed successfully for user {user_id}: {order_result}"
                                 )
+
+                                # 📱 텔레그램 알림 전송 (진입)
+                                try:
+                                    notifier = get_telegram_notifier()
+                                    if notifier.is_enabled():
+                                        trade_info = TradeInfo(
+                                            symbol=symbol,
+                                            side="Long"
+                                            if signal_action == "buy"
+                                            else "Short",
+                                            entry_price=price,
+                                            quantity=signal_size,
+                                            leverage=allowed_leverage,
+                                            stop_loss=signal_result.get("stop_loss"),
+                                            take_profit=signal_result.get(
+                                                "take_profit"
+                                            ),
+                                        )
+                                        await notifier.notify_new_trade(trade_info)
+                                        logger.info(
+                                            f"📱 Telegram: Trade entry notification sent for user {user_id}"
+                                        )
+                                except Exception as e:
+                                    logger.warning(f"텔레그램 진입 알림 전송 실패: {e}")
 
                             except Exception as e:
                                 logger.error(
